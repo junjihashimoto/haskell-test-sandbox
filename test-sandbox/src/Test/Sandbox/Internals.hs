@@ -222,6 +222,7 @@ getNewPort name = do
 isBindable :: PortNumber -> IO Bool
 isBindable p = withSocketsDo $ do
   s <- socket AF_INET Stream defaultProtocol
+  setSocketOption s ReuseAddr 1
   localhost <- inet_addr "127.0.0.1"
   let sa = SockAddrInet p localhost
   r <- (bind s sa >> isBound s)
