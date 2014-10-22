@@ -105,7 +105,7 @@ sandbox :: String    -- ^ Name of the sandbox environment
         -> IO a
 sandbox name actions = withSystemTempDirectory (name ++ "_") $ \dir -> do
   env <- newSandboxState name dir
-  (runReaderT . runErrorT . runSandbox) (actions `finally` stopAll) env >>= either
+  (runReaderT . runErrorT . runSandbox) (actions `finally` stopAll' True) env >>= either
     (\error -> do hPutStrLn stderr error
                   throwIO $ userError error)
     return
@@ -180,10 +180,15 @@ waitFor name timeout = waitFor' 0
 -- | Gracefully stops a previously started process (verbose)
 stop :: String     -- ^ Process name
      -> Sandbox ()
-stop process = uninterruptibleMask_ $ do
+stop process = stop' process False
+
+stop' :: String     -- ^ Process name
+     -> Bool
+     -> Sandbox ()
+stop' process forceKill = uninterruptibleMask_ $ do
   sp <- getProcess process
   whenM isVerbose $ liftIO $ putStr ("Stopping process " ++ process ++ "... ") >> hFlush stdout
-  updateProcess =<< stopProcess sp
+  updateProcess =<< stopProcess sp forceKill
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Sends a POSIX signal to a process
@@ -198,10 +203,13 @@ signal process sig = uninterruptibleMask_ $ do
 
 -- | Gracefully stops all registered processes (in their reverse registration order)
 stopAll :: Sandbox ()
-stopAll = uninterruptibleMask_ $ do
+stopAll = stopAll' False
+
+stopAll' :: Bool -> Sandbox ()
+stopAll' forceKill = uninterruptibleMask_ $ do
   whenM isVerbose $ liftIO $ putStr "Stopping all sandbox processes... " >> hFlush stdout
   silently $ do env <- get
-                mapM_ stop (reverse $ ssProcessOrder env)
+                mapM_ (\sp -> stop' sp forceKill) (reverse $ ssProcessOrder env)
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Returns the effective binary path of a registered process.

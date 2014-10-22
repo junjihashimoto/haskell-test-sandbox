@@ -307,16 +307,17 @@ startProcess sp =
 formatCommandLine :: String -> [String] -> String
 formatCommandLine bin args = unwords $ bin : args
 
-stopProcess :: SandboxedProcess -> Sandbox SandboxedProcess
-stopProcess sp =
+stopProcess :: SandboxedProcess -> Bool -> Sandbox SandboxedProcess
+stopProcess sp forceKill =
   case spInstance sp of
     Just (RunningInstance ph _ _) -> do
       let wait = if isNothing $ spWait sp then 50000 else fromJust (spWait sp) * secondInµs `div` 5
-      liftIO $ do terminateProcess ph
+      liftIO $ do (if forceKill then killProcess else terminateProcess) ph
                   threadDelay wait
       stillRunning <- liftM isNothing $ liftIO $ getProcessExitCode ph
       when stillRunning $ liftIO $ killProcess ph
-      stopProcess =<< getProcess (spName sp)
+      process <- getProcess (spName sp)
+      stopProcess process forceKill
     _ -> return sp
 
 hSignalProcess :: Signal -> ProcessHandle -> IO ()
