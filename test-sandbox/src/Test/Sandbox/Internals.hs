@@ -121,7 +121,7 @@ newSandboxState :: String -> FilePath -> IO SandboxStateRef
 newSandboxState name dir = do
   gen <- newStdGen
   let availablePorts = shuffle' userPorts (length userPorts) gen
-                       where userPorts = [49152..65535]
+                       where userPorts = [5001..32767]
   newIORef $ SandboxState name dir M.empty [] M.empty availablePorts M.empty M.empty
 
 registerProcess ::
