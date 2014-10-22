@@ -5,6 +5,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Test.Sandbox.Internals where
 
@@ -26,12 +27,14 @@ import Data.Char
 import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Data.Maybe
 import Data.Serialize (Serialize, decode, encode)
 import GHC.Generics (Generic)
 import GHC.IO.Handle
 import Network
 import Network.Socket
+import Numeric
 import Prelude hiding (error)
 import qualified Prelude (error)
 import System.Directory
@@ -44,6 +47,7 @@ import System.Process hiding (env, waitForProcess)
 import System.Process.Internals (withProcessHandle, ProcessHandle__(OpenHandle))
 import System.Random
 import System.Random.Shuffle
+import Text.Regex.Posix
 
 type SandboxStateRef = IORef SandboxState
 
@@ -220,7 +224,10 @@ getNewPort name = do
           return (head pl', tail pl')
 
 isBindable :: PortNumber -> IO Bool
-isBindable p = withSocketsDo $ do
+isBindable p = isBindableByProc p `catch` (\(e::SomeException) -> isBindableBySocket p)
+
+isBindableBySocket :: PortNumber -> IO Bool
+isBindableBySocket p = withSocketsDo $ do
   s <- socket AF_INET Stream defaultProtocol
   setSocketOption s ReuseAddr 1
   localhost <- inet_addr "127.0.0.1"
@@ -229,6 +236,42 @@ isBindable p = withSocketsDo $ do
          `catch` ((\_ -> return False) :: SomeException -> IO Bool)
   close s
   return $! r
+
+isBindableByProc :: PortNumber -> IO Bool
+isBindableByProc port = do
+  ports <- getPorts
+  return $ not $ S.member (fromIntegral port) $ S.unions $ (map S.singleton $ ports) 
+  where
+    getPort :: String -> Maybe Int
+    getPort v =
+      if v =~ pattern
+        then
+          case (v =~ pattern) of
+            [[_str,port]] ->
+              case readHex port of
+                [(port',_)] -> Just port'
+                _ -> Nothing
+            _ -> Nothing
+        else Nothing
+      where
+        pattern = "^ *[0-9]+: [0-9A-F]+:([0-9A-F]+) .*"
+
+    getPorts :: IO [Int]
+    getPorts = do
+      let files = [
+            "/proc/net/tcp",
+            "/proc/net/tcp6",
+            "/proc/net/udp",
+            "/proc/net/udp6"]
+      list <- forM files $ \file -> do
+        v <- readFile file
+        return $ catMaybes $ map getPort $ lines v
+      return $ flatten list
+      where
+        flatten :: [[a]] -> [a]
+        flatten [] = []
+        flatten (x:xs) = x ++ flatten xs
+
 
 startProcess :: SandboxedProcess -> Sandbox SandboxedProcess
 startProcess sp =

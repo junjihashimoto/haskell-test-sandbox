@@ -35,7 +35,7 @@ Library
                         data-default, directory, filepath, lifted-base,
                         monad-control, monad-loops, mtl, network, process,
                         random, random-shuffle, temporary, transformers,
-                        transformers-base, unix
+                        transformers-base, unix, regex-posix
 
     Hs-source-dirs:     src
 
