@@ -83,6 +83,7 @@ import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Error (runErrorT)
 import Control.Monad.Trans.Reader (runReaderT)
 import Control.Monad.Error.Class (catchError, throwError)
+import Control.Applicative
 import qualified Data.ByteString.Char8 as B
 import Data.Default
 import Data.Either
@@ -96,8 +97,62 @@ import System.Exit
 import System.IO
 import System.IO.Temp
 import System.Posix hiding (release)
+import System.Process
 
 import Test.Sandbox.Internals
+
+
+import System.Posix.Process
+import System.Posix.Signals
+import System.Directory
+import Text.Regex.Posix
+import Control.Monad
+import Data.Maybe
+
+data ProcessInfo = ProcessInfo {
+   piPid  :: String
+,  piStat :: String
+,  piPpid :: String
+,  piPgid :: String
+} deriving (Show,Eq,Read)
+
+getProcessInfo :: String -> Maybe ProcessInfo
+getProcessInfo v =
+  if v =~ pattern
+    then
+      case v =~ pattern of
+        [[_str,pid,stat,ppid,pgid]] -> Just $ ProcessInfo pid stat ppid pgid
+        _ -> Nothing
+    else
+      Nothing
+  where
+    pattern = "^([0-9]+) \\([^\\)]*\\) ([RSDZTW]) ([0-9]+) ([0-9]+) [0-9]+ .*"
+
+getProcessInfos :: IO [ProcessInfo]
+getProcessInfos = do
+  dirs <- getDirectoryContents "/proc"
+  let processes = filter ( =~ "[0-9]+") dirs
+  stats <- forM processes $ \ps -> do
+    file <- readFile $ "/proc/" ++ ps ++ "/stat"
+    return $ getProcessInfo file
+  return $ catMaybes stats 
+
+
+setPgid :: IO ()
+setPgid = do
+  pid <- getProcessID
+  pgid <- createProcessGroupFor pid
+  joinProcessGroup pgid
+
+
+killGroup :: IO ()
+killGroup = do
+  pid <- getProcessID
+  pgid <- getProcessGroupID
+  pis <- getProcessInfos
+  let killingList =  filter (\p -> piPgid p == show pgid && piPid p /= show pid) pis
+  forM_ killingList $ \ps ->
+    signalProcess sigKILL $ read $ piPid ps
 
 -- | Creates a sandbox and execute the given actions in the IO monad.
 sandbox :: String    -- ^ Name of the sandbox environment
@@ -105,6 +160,7 @@ sandbox :: String    -- ^ Name of the sandbox environment
         -> IO a
 sandbox name actions = withSystemTempDirectory (name ++ "_") $ \dir -> do
   env <- newSandboxState name dir
+  setPgid
   (runReaderT . runErrorT . runSandbox) (actions `finally` stopAll' True) env >>= either
     (\error -> do hPutStrLn stderr error
                   throwIO $ userError error)
@@ -208,9 +264,26 @@ stopAll = stopAll' False
 stopAll' :: Bool -> Sandbox ()
 stopAll' forceKill = uninterruptibleMask_ $ do
   whenM isVerbose $ liftIO $ putStr "Stopping all sandbox processes... " >> hFlush stdout
+  env <- get
+  whenM isVerbose $ liftIO $ do
+    myPid <- getProcessID
+    msg <- readProcess "pstree" ["-p",show myPid] []
+    putStrLn msg
+    forM_ (reverse $ ssProcessOrder env) $ \sp -> do
+      case spInstance <$> (M.lookup sp (ssProcesses env)) of
+        (Just (Just (RunningInstance ph _ _))) -> do
+          pid <- hGetProcessID ph
+          putStrLn ("Starting to kill " ++ sp ++ " " ++ show pid )
+        _ -> return ()
+    hFlush stdout    
   silently $ do env <- get
                 mapM_ (\sp -> stop' sp forceKill) (reverse $ ssProcessOrder env)
   whenM isVerbose $ liftIO $ putStrLn "Done."
+  liftIO $ do
+    killGroup
+    myPid <- getProcessID
+    msg <- readProcess "pstree" ["-p",show myPid] []
+    putStrLn msg
 
 -- | Returns the effective binary path of a registered process.
 getBinary :: String           -- ^ Process name
