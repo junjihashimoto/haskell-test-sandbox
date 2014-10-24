@@ -41,12 +41,25 @@ Library
 
     Default-Language:   Haskell2010
 
--- test-suite test
---     type:              exitcode-stdio-1.0
---     main-is:           test.hs
---     hs-source-dirs:    test,dist/build/autogen
---     ghc-options:       -Wall
+test-suite test
+    type:              exitcode-stdio-1.0
+    main-is:           test.hs
+    hs-source-dirs:    test,dist/build/autogen
+    ghc-options:       -Wall
 
---     build-depends: base
---                  , test-sandbox
---                  , hspec
+    build-depends: base
+                 , test-sandbox
+                 , hspec
+                 , template-haskell
+                 , heredoc
+                 , hastache
+                 , text
+                 , containers
+                 , unix
+                 , mtl
+                 , transformers
+                 , regex-posix
+                 , directory
+                 , process
+                 , here
+    Default-Language:   Haskell2010

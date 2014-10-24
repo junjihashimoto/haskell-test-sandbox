@@ -14,12 +14,12 @@ import Control.Concurrent
 import Control.Exception.Lifted
 import Control.Monad
 import Control.Monad.Base (MonadBase)
-import Control.Monad.Error (MonadError, catchError, throwError)
+import Control.Monad.Except (MonadError, catchError, throwError)
 import Control.Monad.Loops
 import Control.Monad.Reader (MonadReader, ask)
 import Control.Monad.Trans (MonadIO, liftIO)
 import Control.Monad.Trans.Control (MonadBaseControl (..))
-import Control.Monad.Trans.Error (ErrorT)
+import Control.Monad.Trans.Except (ExceptT)
 import Control.Monad.Trans.Reader (ReaderT)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
@@ -52,11 +52,11 @@ import Text.Regex.Posix
 type SandboxStateRef = IORef SandboxState
 
 newtype Sandbox a = Sandbox {
-    runSandbox :: ErrorT String (ReaderT SandboxStateRef IO) a
+    runSandbox :: ExceptT String (ReaderT SandboxStateRef IO) a
   } deriving (Applicative, Functor, Monad, MonadBase IO, MonadError String, MonadReader (IORef SandboxState), MonadIO)
 
 instance MonadBaseControl IO Sandbox where
-  newtype StM Sandbox a = StMSandbox { runStMSandbox :: StM (ErrorT String (ReaderT SandboxStateRef IO)) a }
+  newtype StM Sandbox a = StMSandbox { runStMSandbox :: StM (ExceptT String (ReaderT SandboxStateRef IO)) a }
   liftBaseWith f = Sandbox . liftBaseWith $ \run -> f (liftM StMSandbox . run . runSandbox)
   restoreM = Sandbox . restoreM . runStMSandbox
 
@@ -78,6 +78,8 @@ data SandboxedProcess = SandboxedProcess {
   , spWait :: Maybe Int
   , spCapture :: Maybe Capture
   , spInstance :: Maybe SandboxedProcessInstance
+  , spPid :: Maybe ProcessID
+  , spPGid :: Maybe ProcessGroupID
   }
 
 data Capture = CaptureStdout
@@ -135,9 +137,10 @@ registerProcess name bin args wait capture = do
   env <- get
   if isJust (M.lookup name (ssProcesses env)) then
     throwError $ "Process " ++ name ++ " is already registered in the test environment."
-    else do let sp = SandboxedProcess name bin args wait capture Nothing
+    else do let sp = SandboxedProcess name bin args wait capture Nothing Nothing Nothing
             put env { ssProcesses = M.insert name sp (ssProcesses env)
-                    , ssProcessOrder = ssProcessOrder env ++ [name] }
+                    , ssProcessOrder = ssProcessOrder env ++ [name]
+                    }
             return sp
 
 isValidProcessName :: String -> Bool
@@ -293,13 +296,20 @@ startProcess sp =
                                                              CaptureStderr -> return (Just hRO, Inherit, UseHandle hRW)
                                                              CaptureBoth -> return (Just hRO, UseHandle hRW, UseHandle hRW)
                                     Nothing -> return (Nothing, Inherit, Inherit)
-      (Just ih, _, _, ph) <- liftIO $ createProcess $ (proc bin args) { std_in = CreatePipe
+      (Just ih, _, _, ph) <- liftIO $ createProcess $ ((proc bin args) {create_group = True} ) { std_in = CreatePipe
                                                                       , std_out = hOutRW
                                                                       , std_err = hErrRW }
       when (isJust $ spWait sp) $ liftIO . threadDelay $ fromJust (spWait sp) * secondInµs
       errno <- liftIO $ getProcessExitCode ph
       case errno of
-        Nothing -> updateProcess sp { spInstance = Just $ RunningInstance ph ih hOutRO }
+        Nothing -> do
+          pid <- liftIO $ hGetProcessID ph
+          pgid <- liftIO $ getProcessGroupIDOf pid
+          updateProcess sp { 
+            spInstance = Just $ RunningInstance ph ih hOutRO 
+          , spPid = Just pid
+          , spPGid = Just pgid
+          }
         Just errno' -> throwError $ "Process " ++ spName sp ++ " not running.\n"
                                  ++ " - command-line: " ++ formatCommandLine bin args ++ "\n"
                                  ++ " - exit code: " ++ show errno' 
@@ -307,18 +317,34 @@ startProcess sp =
 formatCommandLine :: String -> [String] -> String
 formatCommandLine bin args = unwords $ bin : args
 
-stopProcess :: SandboxedProcess -> Bool -> Sandbox SandboxedProcess
-stopProcess sp forceKill =
+stopProcess :: SandboxedProcess -> Sandbox SandboxedProcess
+stopProcess sp =
   case spInstance sp of
     Just (RunningInstance ph _ _) -> do
       let wait = if isNothing $ spWait sp then 50000 else fromJust (spWait sp) * secondInµs `div` 5
-      liftIO $ do (if forceKill then killProcess else terminateProcess) ph
+      liftIO $ do terminateProcess ph
                   threadDelay wait
       stillRunning <- liftM isNothing $ liftIO $ getProcessExitCode ph
       when stillRunning $ liftIO $ killProcess ph
       process <- getProcess (spName sp)
-      stopProcess process forceKill
+      stopProcess process
+      -- stat <- getGroupProcessStatus  False False (spPGid sp)
+      -- case stat of
+      --   Just _ -> do
+      --     signalProcessGroup sigKILL (spPGid sp)
+      --     stopProcess sp
+      --   Nothing -> do
+      --     return $ sp {}
     _ -> return sp
+
+cleanUpProcesses :: Sandbox ()
+cleanUpProcesses = do
+  stat <- get  
+  forM_ (M.toList (ssProcesses stat)) $ \(_k,sp) -> do
+    case (spPGid sp) of
+      Just pgid -> liftIO $ signalProcessGroup sigKILL pgid `catch`  (\(_::SomeException) -> return ())
+      Nothing -> return ()
+
 
 hSignalProcess :: Signal -> ProcessHandle -> IO ()
 hSignalProcess s h = do

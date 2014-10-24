@@ -33,6 +33,8 @@ module Test.Sandbox (
 
   -- * Initialization
   , sandbox
+  , withSandbox
+  , runSB
 
   -- * Registering processes
   , register
@@ -80,8 +82,9 @@ import Control.Concurrent (threadDelay)
 import Control.Exception.Lifted
 import Control.Monad
 import Control.Monad.Trans (liftIO)
-import Control.Monad.Trans.Error (runErrorT)
+import Control.Monad.Trans.Except (runExceptT)
 import Control.Monad.Trans.Reader (runReaderT)
+import Control.Monad.Reader
 import Control.Monad.Error.Class (catchError, throwError)
 import Control.Applicative
 import qualified Data.ByteString.Char8 as B
@@ -98,6 +101,7 @@ import System.IO
 import System.IO.Temp
 import System.Posix hiding (release)
 import System.Process
+import System.Environment
 
 import Test.Sandbox.Internals
 
@@ -109,62 +113,35 @@ import Text.Regex.Posix
 import Control.Monad
 import Data.Maybe
 
-data ProcessInfo = ProcessInfo {
-   piPid  :: String
-,  piStat :: String
-,  piPpid :: String
-,  piPgid :: String
-} deriving (Show,Eq,Read)
 
-getProcessInfo :: String -> Maybe ProcessInfo
-getProcessInfo v =
-  if v =~ pattern
-    then
-      case v =~ pattern of
-        [[_str,pid,stat,ppid,pgid]] -> Just $ ProcessInfo pid stat ppid pgid
-        _ -> Nothing
-    else
-      Nothing
-  where
-    pattern = "^([0-9]+) \\([^\\)]*\\) ([RSDZTW]) ([0-9]+) ([0-9]+) [0-9]+ .*"
-
-getProcessInfos :: IO [ProcessInfo]
-getProcessInfos = do
-  dirs <- getDirectoryContents "/proc"
-  let processes = filter ( =~ "[0-9]+") dirs
-  stats <- forM processes $ \ps -> do
-    file <- readFile $ "/proc/" ++ ps ++ "/stat"
-    return $ getProcessInfo file
-  return $ catMaybes stats 
-
-
-setPgid :: IO ()
-setPgid = do
-  pid <- getProcessID
-  pgid <- createProcessGroupFor pid
-  joinProcessGroup pgid
-
-
-killGroup :: IO ()
-killGroup = do
-  pid <- getProcessID
-  pgid <- getProcessGroupID
-  pis <- getProcessInfos
-  let killingList =  filter (\p -> piPgid p == show pgid && piPid p /= show pid) pis
-  forM_ killingList $ \ps ->
-    signalProcess sigKILL $ read $ piPid ps
+errorHandler error' = do
+  hPutStrLn stderr error'
+  throwIO $ userError error'
 
 -- | Creates a sandbox and execute the given actions in the IO monad.
 sandbox :: String    -- ^ Name of the sandbox environment
         -> Sandbox a -- ^ Action to perform
         -> IO a
 sandbox name actions = withSystemTempDirectory (name ++ "_") $ \dir -> do
-  env <- newSandboxState name dir
-  setPgid
-  (runReaderT . runErrorT . runSandbox) (actions `finally` stopAll' True) env >>= either
-    (\error -> do hPutStrLn stderr error
-                  throwIO $ userError error)
-    return
+  env <- newSandboxState name dir  
+  val <- (runReaderT . runExceptT . runSandbox) (actions `finally` cleanUp) env
+  either errorHandler return val
+  where
+    cleanUp = do
+      stopAll
+      cleanUpProcesses
+
+withSandbox :: (SandboxStateRef -> IO a) -> IO a
+withSandbox actions = do
+  name <- getProgName
+  sandbox name $ do
+    ref <- ask
+    liftIO $ actions ref
+
+runSB :: SandboxStateRef -> Sandbox a -> IO a
+runSB env' action = do
+  val <- (runReaderT . runExceptT . runSandbox) action env'
+  either errorHandler return val
 
 -- | Optional parameters when registering a process in the Sandbox monad.
 data ProcessSettings = ProcessSettings {
@@ -218,7 +195,7 @@ start process = uninterruptibleMask_ $ do
 startAll :: Sandbox ()
 startAll = uninterruptibleMask_ $ do
   displayBanner
-  whenM isVerbose $ liftIO $ putStr "Starting all sandbox processes... " >> hFlush stdout
+  whenM isVerbose $ liftIO $ putStrLn "Starting all sandbox processes... " >> hFlush stdout
   silently $ do env <- get
                 mapM_ start (ssProcessOrder env)
   whenM isVerbose $ liftIO $ putStrLn "Done."
@@ -236,15 +213,10 @@ waitFor name timeout = waitFor' 0
 -- | Gracefully stops a previously started process (verbose)
 stop :: String     -- ^ Process name
      -> Sandbox ()
-stop process = stop' process False
-
-stop' :: String     -- ^ Process name
-     -> Bool
-     -> Sandbox ()
-stop' process forceKill = uninterruptibleMask_ $ do
+stop process = uninterruptibleMask_ $ do
   sp <- getProcess process
   whenM isVerbose $ liftIO $ putStr ("Stopping process " ++ process ++ "... ") >> hFlush stdout
-  updateProcess =<< stopProcess sp forceKill
+  updateProcess =<< stopProcess sp
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Sends a POSIX signal to a process
@@ -259,16 +231,13 @@ signal process sig = uninterruptibleMask_ $ do
 
 -- | Gracefully stops all registered processes (in their reverse registration order)
 stopAll :: Sandbox ()
-stopAll = stopAll' False
-
-stopAll' :: Bool -> Sandbox ()
-stopAll' forceKill = uninterruptibleMask_ $ do
+stopAll = uninterruptibleMask_ $ do
   whenM isVerbose $ liftIO $ putStr "Stopping all sandbox processes... " >> hFlush stdout
   env <- get
   whenM isVerbose $ liftIO $ do
-    myPid <- getProcessID
-    msg <- readProcess "pstree" ["-p",show myPid] []
-    putStrLn msg
+    -- myPid <- getProcessID
+    -- msg <- readProcess "pstree" ["-p",show myPid] []
+    -- putStrLn msg
     forM_ (reverse $ ssProcessOrder env) $ \sp -> do
       case spInstance <$> (M.lookup sp (ssProcesses env)) of
         (Just (Just (RunningInstance ph _ _))) -> do
@@ -277,13 +246,13 @@ stopAll' forceKill = uninterruptibleMask_ $ do
         _ -> return ()
     hFlush stdout    
   silently $ do env <- get
-                mapM_ (\sp -> stop' sp forceKill) (reverse $ ssProcessOrder env)
+                mapM_ (\sp -> stop sp) (reverse $ ssProcessOrder env)
   whenM isVerbose $ liftIO $ putStrLn "Done."
-  liftIO $ do
-    killGroup
-    myPid <- getProcessID
-    msg <- readProcess "pstree" ["-p",show myPid] []
-    putStrLn msg
+  -- liftIO $ do
+  --   -- killGroup
+  --   myPid <- getProcessID
+  --   msg <- readProcess "pstree" ["-p",show myPid] []
+  --   putStrLn msg
 
 -- | Returns the effective binary path of a registered process.
 getBinary :: String           -- ^ Process name
