@@ -30,6 +30,7 @@ Source-Repository this
 Library
     Exposed-modules:    Test.Sandbox
                         Test.Sandbox.Internals
+                        Test.Sandbox.Process
 
     Build-Depends:      base >=4 && <5, bytestring, cereal, containers,
                         data-default, directory, filepath, lifted-base,
@@ -38,8 +39,8 @@ Library
                         transformers-base, unix, regex-posix
 
     Hs-source-dirs:     src
-
     Default-Language:   Haskell2010
+    ghc-options:       -Wall
 
 test-suite test
     type:              exitcode-stdio-1.0
@@ -62,4 +63,5 @@ test-suite test
                  , directory
                  , process
                  , here
+                 , QuickCheck
     Default-Language:   Haskell2010

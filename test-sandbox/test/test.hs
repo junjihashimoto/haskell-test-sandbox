@@ -1,8 +1,13 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 import Test.Hspec
+--import Test.Hspec.QuickCheck
+import Test.QuickCheck
+import Test.QuickCheck.Monadic (assert,monadicIO)
+--import Test.QuickCheck.Monadic (monadicIO)
 import Test.Sandbox
-import Test.Sandbox.Internals (get)
+import qualified Test.Sandbox.Internals as I
 import Text.Heredoc
 import qualified Text.Hastache as H
 import qualified Text.Hastache.Context as H
@@ -10,127 +15,150 @@ import qualified Data.Text.Lazy as TL
 import qualified Data.Text as T
 import qualified Data.Map as M
 import System.Posix.Files
-import System.Directory
 import Data.IORef
-import Control.Monad.Trans.Reader
-import Control.Monad.Reader
-import Text.Regex.Posix
-import System.Process
-import System.Posix.Process
-import Data.Maybe
---import Data.String.Here
+import Data.Char
+--import Control.Exception hiding (assert)
+import Control.Concurrent
 
-main = 
+a2b :: String -> String
+a2b [] = []
+a2b ('a':xs) = 'b':xs
+a2b (x:xs) = x:a2b xs
+
+a2btest :: I.SandboxStateRef -> [Char] -> Property
+a2btest ref str' = a2btest' ref $ filter isAlphaNum str'
+
+a2btest' :: I.SandboxStateRef -> [Char] -> Property
+a2btest' ref str' =
+  monadicIO $ do
+    v <- liftIO $ runSB ref $ interactWith "sed_regex" (str' ++ "\n") 1
+    assert $ v == ((a2b str') ++ "\n")
+
+main :: IO ()
+main = withSandbox $ \gref -> do
   hspec $ do
     describe "Basic Test" $ do
       it "interactive Test by sandbox" $ do
         sandbox "hogehoge" $ do
           start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
           v <- interactWith "sed_regex" "a\n" 1
-          liftIO $
-            v `shouldBe` "b\n"
+          liftIO $ v `shouldBe` "b\n"
       it "interactive Test by withSandbox" $ do
         withSandbox $ \ref -> do
           val <- runSB ref $ do
             start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
             interactWith "sed_regex" "a\n" 1
           val `shouldBe` "b\n"
-    describe "create script" $ do
+      it "interactive Test : QuickCheck(setup)" $ do
+        val <- runSB gref $ do
+          start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
+          interactWith "sed_regex" "a\n" 1
+        val `shouldBe` "b\n"
+      it "interactive Test : QuickCheck(run)" $
+        property $ a2btest gref
       it "setFile" $ do
         withSandbox $ \ref -> do
-          let foo = "aaaa"
-          let content = 
+          let content =
                   [str|#!/bin/env bash
-                      |${foo}
-                      |
                       |while true ; do echo hhh ; sleep 1;done
                       |]
           putStr content
           file <- runSB ref $ setFile "str1" content
           readFile file `shouldReturn`  content
-    describe "create script" $ do
-      it "setFile" $ do
+      it "set/getVariable" $ do
+        withSandbox $ \ref -> do
+          runSB ref $ do
+            v <- I.isVerbose
+            liftIO $ v `shouldBe` True
+            _ <- setVariable I.verbosityKey False
+            v' <- I.isVerbose
+            liftIO $ v' `shouldBe` False
+          runSB ref I.isVerbose `shouldReturn` False
+          _ <- runSB ref $ setVariable I.verbosityKey True
+          runSB ref I.isVerbose `shouldReturn` True
+
+    describe "signal test" $ do
+      it "send kill signal for process groups" $ do
         val <- newIORef $ error "do not eval this"
-        withSandbox $ \ref -> runSB ref $ do 
+        withSandbox $ \ref -> runSB ref $ do
           file <- setFile "str1"
                   [str|#!/usr/bin/env bash
-                      |trap 1 2 3 15
+                      |trap "echo catch signal" 1 2 3 15
                       |while true ; do echo hhh ; sleep 1;done
                       |]
           liftIO $ setExecuteMode file
           fil2 <- setFile' "str2"
                   [("file",file)]
                   [str|#!/usr/bin/env bash
+                      |trap "echo catch signal" 1 2 3 15
                       |{{file}}&
                       |{{file}}&
                       |{{file}}&
-                      |trap 1 2 3 15
                       |while true ; do echo hhh ; sleep 1;done
                       |]
           liftIO $ setExecuteMode fil2
           _ <- register "scr1" fil2 [] def
           startAll
-          stat <- get
-          liftIO $ writeIORef val stat
-        True `shouldBe` True
+          liftIO $ writeIORef val ref
+          pids <- I.getAvailablePids
+          liftIO $ threadDelay $ 1 * 1000 * 1000
+          liftIO $ (length pids >= 4) `shouldBe` True
+        ref' <- readIORef val
+        pids <- runSB ref' $ I.getAvailablePids
+        length pids `shouldBe` 0
 
+      it "not send kill signal for process groups" $ do
+        val <- newIORef $ error "do not eval this"
+        withSandbox $ \ref -> runSB ref $ do
+          file <- setFile "str1"
+                  [str|#!/usr/bin/env bash
+                      |trap "echo catch signal" 1 2 3 15
+                      |while true ; do echo hhh ; sleep 1;done
+                      |]
+          liftIO $ setExecuteMode file
+          fil2 <- setFile' "str2"
+                  [("file",file)]
+                  [str|#!/usr/bin/env bash
+                      |trap "echo catch signal" 1 2 3 15
+                      |{{file}}&
+                      |{{file}}&
+                      |{{file}}&
+                      |while true ; do echo hhh ; sleep 1;done
+                      |]
+          liftIO $ setExecuteMode fil2
+          _ <- register "scr1" fil2 [] def
+          startAll
+          _ <- setVariable I.cleanUpKey False
+          pids <- I.getAvailablePids
+          liftIO $ writeIORef val ref
+          liftIO $ do
+            threadDelay $ 1 * 1000 * 1000
+            (length pids >= 4) `shouldBe` True
+        ref' <- readIORef val
+        pids <- runSB ref' $ I.getAvailablePids
+        (length pids >0 ) `shouldBe` True
+        pids' <- runSB ref' $ do
+          I.cleanUpProcesses
+          liftIO $ threadDelay $ 1 * 1000 * 1000
+          I.getAvailablePids
+        length pids' `shouldBe` 0
+
+
+setFile' :: H.MuVar a
+         => String
+         -> [(String, a)]
+         -> String
+         -> Sandbox FilePath
 setFile' filename keyValues template  = do
-  str <- H.hastacheStr
-         H.defaultConfig
-         (H.encodeStr template)
-         (H.mkStrContext context)
-  setFile filename $ T.unpack $ TL.toStrict str
+  str' <- H.hastacheStr
+          H.defaultConfig
+          (H.encodeStr template)
+          (H.mkStrContext context')
+  setFile filename $ T.unpack $ TL.toStrict str'
   where
-    context str = (M.fromList (map (\(k,v) -> (k,H.MuVariable v)) keyValues)) M.! str
+    context' str' = (M.fromList (map (\(k,v) -> (k,H.MuVariable v)) keyValues)) M.! str'
 
+setExecuteMode :: FilePath -> IO ()
 setExecuteMode file = do
-  print $ file
   stat <- getFileStatus file
   setFileMode file (fileMode stat `unionFileModes` ownerExecuteMode)
-  
-
-data ProcessInfo = ProcessInfo {
-   piPid  :: String
-,  piStat :: String
-,  piPpid :: String
-,  piPgid :: String
-} deriving (Show,Eq,Read)
-
-getProcessInfo :: String -> Maybe ProcessInfo
-getProcessInfo v =
-  if v =~ pattern
-    then
-      case v =~ pattern of
-        [[_str,pid,stat,ppid,pgid]] -> Just $ ProcessInfo pid stat ppid pgid
-        _ -> Nothing
-    else
-      Nothing
-  where
-    pattern = "^([0-9]+) \\([^\\)]*\\) ([RSDZTW]) ([0-9]+) ([0-9]+) [0-9]+ .*"
-
-getProcessInfos :: IO [ProcessInfo]
-getProcessInfos = do
-  dirs <- getDirectoryContents "/proc"
-  let processes = filter ( =~ "[0-9]+") dirs
-  stats <- forM processes $ \ps -> do
-    file <- readFile $ "/proc/" ++ ps ++ "/stat"
-    return $ getProcessInfo file
-  return $ catMaybes stats 
-
-
--- setPgid :: IO ()
--- setPgid = do
---   pid <- getProcessID
---   pgid <- createProcessGroupFor pid
---   joinProcessGroup pgid
-
-
--- killGroup :: IO ()
--- killGroup = do
---   pid <- getProcessID
---   pgid <- getProcessGroupID
---   pis <- getProcessInfos
---   let killingList =  filter (\p -> piPgid p == show pgid && piPid p /= show pid) pis
---   forM_ killingList $ \ps ->
---     signalProcess sigKILL $ read $ piPid ps
-

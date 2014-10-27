@@ -82,9 +82,7 @@ import Control.Concurrent (threadDelay)
 import Control.Exception.Lifted
 import Control.Monad
 import Control.Monad.Trans (liftIO)
-import Control.Monad.Trans.Except (runExceptT)
-import Control.Monad.Trans.Reader (runReaderT)
-import Control.Monad.Reader
+import Control.Monad.Reader (ask)
 import Control.Monad.Error.Class (catchError, throwError)
 import Control.Applicative
 import qualified Data.ByteString.Char8 as B
@@ -100,20 +98,12 @@ import System.Exit
 import System.IO
 import System.IO.Temp
 import System.Posix hiding (release)
-import System.Process
 import System.Environment
 
 import Test.Sandbox.Internals
 
 
-import System.Posix.Process
-import System.Posix.Signals
-import System.Directory
-import Text.Regex.Posix
-import Control.Monad
-import Data.Maybe
-
-
+errorHandler :: String -> IO a
 errorHandler error' = do
   hPutStrLn stderr error'
   throwIO $ userError error'
@@ -123,13 +113,15 @@ sandbox :: String    -- ^ Name of the sandbox environment
         -> Sandbox a -- ^ Action to perform
         -> IO a
 sandbox name actions = withSystemTempDirectory (name ++ "_") $ \dir -> do
-  env <- newSandboxState name dir  
-  val <- (runReaderT . runExceptT . runSandbox) (actions `finally` cleanUp) env
+  env <- newSandboxState name dir
+  val <- runSandbox' (actions `finally` cleanUp) env
   either errorHandler return val
   where
     cleanUp = do
       stopAll
-      cleanUpProcesses
+      whenM isCleanUp $ do
+        whenM isVerbose $ liftIO $ putStrLn ("Sending kill processGroups") >> hFlush stdout
+        cleanUpProcesses
 
 withSandbox :: (SandboxStateRef -> IO a) -> IO a
 withSandbox actions = do
@@ -140,7 +132,7 @@ withSandbox actions = do
 
 runSB :: SandboxStateRef -> Sandbox a -> IO a
 runSB env' action = do
-  val <- (runReaderT . runExceptT . runSandbox) action env'
+  val <- runSandbox' action env'
   either errorHandler return val
 
 -- | Optional parameters when registering a process in the Sandbox monad.
@@ -188,7 +180,7 @@ start process = uninterruptibleMask_ $ do
   displayBanner
   sp <- getProcess process
   whenM isVerbose $ liftIO $ putStr ("Starting process " ++ process ++ "... ") >> hFlush stdout
-  updateProcess =<< startProcess sp
+  _ <- updateProcess =<< startProcess sp
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Starts all registered processes (in their registration order)
@@ -215,8 +207,8 @@ stop :: String     -- ^ Process name
      -> Sandbox ()
 stop process = uninterruptibleMask_ $ do
   sp <- getProcess process
-  whenM isVerbose $ liftIO $ putStr ("Stopping process " ++ process ++ "... ") >> hFlush stdout
-  updateProcess =<< stopProcess sp
+  whenM isVerbose $ liftIO $ putStrLn ("Stopping process " ++ process ++ "... ") >> hFlush stdout
+  _ <- updateProcess =<< stopProcess sp
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Sends a POSIX signal to a process
@@ -235,24 +227,16 @@ stopAll = uninterruptibleMask_ $ do
   whenM isVerbose $ liftIO $ putStr "Stopping all sandbox processes... " >> hFlush stdout
   env <- get
   whenM isVerbose $ liftIO $ do
-    -- myPid <- getProcessID
-    -- msg <- readProcess "pstree" ["-p",show myPid] []
-    -- putStrLn msg
     forM_ (reverse $ ssProcessOrder env) $ \sp -> do
       case spInstance <$> (M.lookup sp (ssProcesses env)) of
         (Just (Just (RunningInstance ph _ _))) -> do
           pid <- hGetProcessID ph
           putStrLn ("Starting to kill " ++ sp ++ " " ++ show pid )
         _ -> return ()
-    hFlush stdout    
-  silently $ do env <- get
-                mapM_ (\sp -> stop sp) (reverse $ ssProcessOrder env)
+    hFlush stdout
+  silently $ do env' <- get
+                mapM_ (\sp -> stop sp) (reverse $ ssProcessOrder env')
   whenM isVerbose $ liftIO $ putStrLn "Done."
-  -- liftIO $ do
-  --   -- killGroup
-  --   myPid <- getProcessID
-  --   msg <- readProcess "pstree" ["-p",show myPid] []
-  --   putStrLn msg
 
 -- | Returns the effective binary path of a registered process.
 getBinary :: String           -- ^ Process name
@@ -303,7 +287,7 @@ setPort name port = do
   let port' = fromIntegral port
   bindable <- liftIO $ isBindable (fromIntegral port)
   if bindable then do env <- get
-                      put (env { ssAllocatedPorts = M.insert name port' $ ssAllocatedPorts env })
+                      _ <- put (env { ssAllocatedPorts = M.insert name port' $ ssAllocatedPorts env })
                       return port'
     else throwError $ "Unable to bind port " ++ show port
 
@@ -314,7 +298,7 @@ setFile :: String           -- ^ File name for future reference
 setFile name contents = do
   env <- get
   (file, env') <- liftIO $ setFile' name contents env
-  put env'
+  _ <- put env'
   return file
 
 -- | Returns the path of a file previously created by setFile.
@@ -334,7 +318,7 @@ withVariable :: (Serialize a)
              -> Sandbox b
 withVariable key value action = bracket (do env <- get
                                             let old = M.lookup key $ ssVariables env
-                                            setVariable key value
+                                            _ <- setVariable key value
                                             return old)
                                         (\old -> case old of
                                                    Nothing -> unsetVariable key

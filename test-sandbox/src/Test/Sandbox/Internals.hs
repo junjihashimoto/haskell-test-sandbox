@@ -14,13 +14,15 @@ import Control.Concurrent
 import Control.Exception.Lifted
 import Control.Monad
 import Control.Monad.Base (MonadBase)
-import Control.Monad.Except (MonadError, catchError, throwError)
+--import Control.Monad.Except (MonadError, catchError, throwError)
+import Control.Monad.Error (MonadError, catchError, throwError)
 import Control.Monad.Loops
 import Control.Monad.Reader (MonadReader, ask)
 import Control.Monad.Trans (MonadIO, liftIO)
 import Control.Monad.Trans.Control (MonadBaseControl (..))
-import Control.Monad.Trans.Except (ExceptT)
-import Control.Monad.Trans.Reader (ReaderT)
+--import Control.Monad.Trans.Except (ExceptT)
+import Control.Monad.Trans.Error (ErrorT, runErrorT)
+import Control.Monad.Trans.Reader (ReaderT, runReaderT)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B
 import Data.Char
@@ -48,17 +50,21 @@ import System.Process.Internals (withProcessHandle, ProcessHandle__(OpenHandle))
 import System.Random
 import System.Random.Shuffle
 import Text.Regex.Posix
+import Test.Sandbox.Process
 
 type SandboxStateRef = IORef SandboxState
 
 newtype Sandbox a = Sandbox {
-    runSandbox :: ExceptT String (ReaderT SandboxStateRef IO) a
+    runSandbox :: ErrorT String (ReaderT SandboxStateRef IO) a
   } deriving (Applicative, Functor, Monad, MonadBase IO, MonadError String, MonadReader (IORef SandboxState), MonadIO)
 
 instance MonadBaseControl IO Sandbox where
-  newtype StM Sandbox a = StMSandbox { runStMSandbox :: StM (ExceptT String (ReaderT SandboxStateRef IO)) a }
+  newtype StM Sandbox a = StMSandbox { runStMSandbox :: StM (ErrorT String (ReaderT SandboxStateRef IO)) a }
   liftBaseWith f = Sandbox . liftBaseWith $ \run -> f (liftM StMSandbox . run . runSandbox)
   restoreM = Sandbox . restoreM . runStMSandbox
+
+runSandbox' :: Sandbox a -> SandboxStateRef -> IO (Either String a)
+runSandbox' = runReaderT . runErrorT . runSandbox
 
 data SandboxState = SandboxState {
     ssName :: String
@@ -138,9 +144,9 @@ registerProcess name bin args wait capture = do
   if isJust (M.lookup name (ssProcesses env)) then
     throwError $ "Process " ++ name ++ " is already registered in the test environment."
     else do let sp = SandboxedProcess name bin args wait capture Nothing Nothing Nothing
-            put env { ssProcesses = M.insert name sp (ssProcesses env)
-                    , ssProcessOrder = ssProcessOrder env ++ [name]
-                    }
+            _ <- put env { ssProcesses = M.insert name sp (ssProcesses env)
+                         , ssProcessOrder = ssProcessOrder env ++ [name]
+                         }
             return sp
 
 isValidProcessName :: String -> Bool
@@ -163,7 +169,7 @@ getProcess name = do
                      Just oh' -> liftM Just $ liftIO $ hGetContents oh'
                      Nothing -> return Nothing
               let sp' = sp { spInstance = Just $ StoppedInstance ec' o }
-              updateProcess sp'
+              _ <- updateProcess sp'
               return sp'
             Nothing -> return sp
         _ -> return sp
@@ -172,7 +178,7 @@ getProcess name = do
 updateProcess :: SandboxedProcess -> Sandbox SandboxedProcess
 updateProcess sp = do
   env <- get
-  put env { ssProcesses = M.insert (spName sp) sp (ssProcesses env) }
+  _ <- put env { ssProcesses = M.insert (spName sp) sp (ssProcesses env) }
   return sp
 
 secondInµs :: Int
@@ -192,13 +198,24 @@ hReadWithTimeout :: Handle -> Int -> Sandbox ByteString
 hReadWithTimeout h timeout = do
   dataAvailable <- liftIO $ hWaitForInput h timeout `catch` checkEOF
   if dataAvailable then do b <- liftIO $ B.hGetNonBlocking h bufferSize
-                           b' <- hReadWithTimeout h timeout `catchError` (\_ -> return $ B.pack [])
+                           b' <- hReadWithTimeout' h `catchError` (\_ -> return $ B.pack [])
                            return $ B.append b b' -- TODO: Rewrite as terminal recursive
     else throwError $ "No data after " ++ show timeout ++ "ms timeout."
   where
     checkEOF :: IOError -> IO Bool
     checkEOF e = if isEOFError e then do threadDelay $ timeout * 1000
                                          liftM not $ hIsEOF h
+                   else return True
+
+hReadWithTimeout' :: Handle -> Sandbox ByteString
+hReadWithTimeout' h = do
+  dataAvailable <- liftIO $ hWaitForInput h 0 `catch` checkEOF
+  if dataAvailable then do b <- liftIO $ B.hGetNonBlocking h bufferSize
+                           return b
+    else return $ B.pack ""
+  where
+    checkEOF :: IOError -> IO Bool
+    checkEOF e = if isEOFError e then do liftM not $ hIsEOF h
                    else return True
 
 sendToPort :: String -> String -> Int -> Sandbox String
@@ -219,15 +236,15 @@ getNewPort name = do
   case ssAvailablePorts env of
     [] -> throwError "No user ports left."
     ports -> do (port, ports') <- liftIO $ takeBindablePort' ports
-                put env { ssAllocatedPorts = M.insert name port $ ssAllocatedPorts env
-                        , ssAvailablePorts = ports' }
+                _ <- put env { ssAllocatedPorts = M.insert name port $ ssAllocatedPorts env
+                             , ssAvailablePorts = ports' }
                 return port
   where takeBindablePort' pl = do
           pl' <- dropWhileM (liftM not . isBindable) pl
           return (head pl', tail pl')
 
 isBindable :: PortNumber -> IO Bool
-isBindable p = isBindableByProc p `catch` (\(e::SomeException) -> isBindableBySocket p)
+isBindable p = isBindableByProc p `catch` (\(_::SomeException) -> isBindableBySocket p)
 
 isBindableBySocket :: PortNumber -> IO Bool
 isBindableBySocket p = withSocketsDo $ do
@@ -250,9 +267,9 @@ isBindableByProc port = do
       if v =~ pattern
         then
           case (v =~ pattern) of
-            [[_str,port]] ->
-              case readHex port of
-                [(port',_)] -> Just port'
+            [[_str,port']] ->
+              case readHex port' of
+                [(port'',_)] -> Just port''
                 _ -> Nothing
             _ -> Nothing
         else Nothing
@@ -305,8 +322,8 @@ startProcess sp =
         Nothing -> do
           pid <- liftIO $ hGetProcessID ph
           pgid <- liftIO $ getProcessGroupIDOf pid
-          updateProcess sp { 
-            spInstance = Just $ RunningInstance ph ih hOutRO 
+          updateProcess sp {
+            spInstance = Just $ RunningInstance ph ih hOutRO
           , spPid = Just pid
           , spPGid = Just pgid
           }
@@ -328,23 +345,20 @@ stopProcess sp =
       when stillRunning $ liftIO $ killProcess ph
       process <- getProcess (spName sp)
       stopProcess process
-      -- stat <- getGroupProcessStatus  False False (spPGid sp)
-      -- case stat of
-      --   Just _ -> do
-      --     signalProcessGroup sigKILL (spPGid sp)
-      --     stopProcess sp
-      --   Nothing -> do
-      --     return $ sp {}
     _ -> return sp
+
+getAvailablePids :: Sandbox [ProcessID]
+getAvailablePids = do
+  stat <- get
+  let pgids = catMaybes (map (\(_k,v) -> spPGid v) (M.toList (ssProcesses stat)))
+  pids <- liftIO $ getProcessIDs pgids
+  return pids
 
 cleanUpProcesses :: Sandbox ()
 cleanUpProcesses = do
-  stat <- get  
-  forM_ (M.toList (ssProcesses stat)) $ \(_k,sp) -> do
-    case (spPGid sp) of
-      Just pgid -> liftIO $ signalProcessGroup sigKILL pgid `catch`  (\(_::SomeException) -> return ())
-      Nothing -> return ()
-
+  stat <- get
+  let pgids = catMaybes (map (\(_k,v) -> spPGid v) (M.toList (ssProcesses stat)))
+  liftIO $ cleanUpProcessGroupIDs pgids
 
 hSignalProcess :: Signal -> ProcessHandle -> IO ()
 hSignalProcess s h = do
@@ -438,7 +452,7 @@ setVariable :: Serialize a
             -> Sandbox a
 setVariable name new = do
   env <- get
-  put $ env { ssVariables = M.insert name (encode new) (ssVariables env) }
+  _ <- put $ env { ssVariables = M.insert name (encode new) (ssVariables env) }
   return new
 
 -- | Checks that a custom sandbox variable is set.
@@ -473,6 +487,12 @@ isVerbose = getVariable verbosityKey True
 verbosityKey :: String
 verbosityKey = "__VERBOSITY__"
 
+isCleanUp :: Sandbox Bool
+isCleanUp = getVariable cleanUpKey True
+
+cleanUpKey :: String
+cleanUpKey = "__CLEANUP__"
+
 displayBanner :: Sandbox ()
 displayBanner = do
   displayed <- checkVariable var
@@ -483,9 +503,10 @@ displayBanner = do
 installSignalHandlers :: Sandbox ()
 installSignalHandlers = do
   installed <- checkVariable var
-  unless installed $ liftIO . void $ do installHandler sigTERM handler Nothing
-                                        installHandler sigQUIT handler Nothing
-                                        installHandler sigABRT handler Nothing
+  unless installed $ liftIO . void $ do _ <- installHandler sigTERM handler Nothing
+                                        _ <- installHandler sigQUIT handler Nothing
+                                        _ <- installHandler sigABRT handler Nothing
+                                        return ()
   void $ setVariable var True
   where var = "__HANDLERS_INSTALLED__"
         handler = Catch $ signalProcess sigINT =<< getProcessID
