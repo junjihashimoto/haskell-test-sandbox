@@ -10,8 +10,8 @@
 module Test.Sandbox.Internals where
 
 import Control.Applicative (Applicative)
-import Control.Concurrent
-import Control.Exception.Lifted
+import Control.Concurrent 
+import Control.Exception.Lifted hiding (throwTo)
 import Control.Monad
 import Control.Monad.Base (MonadBase)
 --import Control.Monad.Except (MonadError, catchError, throwError)
@@ -65,6 +65,16 @@ instance MonadBaseControl IO Sandbox where
 
 runSandbox' :: Sandbox a -> SandboxStateRef -> IO (Either String a)
 runSandbox' = runReaderT . runErrorT . runSandbox
+
+errorHandler :: String -> IO a
+errorHandler error' = do
+  hPutStrLn stderr error'
+  throwIO $ userError error'
+
+runSB :: SandboxStateRef -> Sandbox a -> IO a
+runSB env' action = do
+  val <- runSandbox' action env'
+  either errorHandler return val
 
 data SandboxState = SandboxState {
     ssName :: String
@@ -348,6 +358,7 @@ cleanUpProcesses :: Sandbox ()
 cleanUpProcesses = do
   stat <- get
   let pgids = catMaybes (map (\(_k,v) -> spPGid v) (M.toList (ssProcesses stat)))
+  whenM isVerbose $ liftIO $ putStrLn ("Starting to kill process groups " ++ show pgids)
   liftIO $ cleanUpProcessGroupIDs pgids
 
 hSignalProcess :: Signal -> ProcessHandle -> IO ()
@@ -492,14 +503,25 @@ displayBanner = do
 
 installSignalHandlers :: Sandbox ()
 installSignalHandlers = do
+  ref <- ask
   installed <- checkVariable var
-  unless installed $ liftIO . void $ do _ <- installHandler sigTERM handler Nothing
-                                        _ <- installHandler sigQUIT handler Nothing
-                                        _ <- installHandler sigABRT handler Nothing
+  tid <- liftIO $ myThreadId
+  unless installed $ liftIO . void $ do _ <- installHandler sigTERM handler' Nothing
+                                        _ <- installHandler sigQUIT handler' Nothing
+                                        _ <- installHandler sigABRT handler' Nothing
+                                        _ <- installHandler sigINT (handler tid ref) Nothing
                                         return ()
   void $ setVariable var True
   where var = "__HANDLERS_INSTALLED__"
-        handler = Catch $ signalProcess sigINT =<< getProcessID
+        handler' = Catch $ do
+          signalProcess sigINT =<< getProcessID
+        handler tid ref = Catch $ do
+          runSB ref cleanUpProcesses
+          throwTo tid $ ExitFailure 1
+          -- threadDelay (2000000)
+          -- signalProcess sigKILL =<< getProcessID
+          
+--signalProcess sigINT =<< getProcessID
 
 -- Structures to store Sandbox options for future use.
 -- Not expected to be used directly by the user.

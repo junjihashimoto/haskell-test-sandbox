@@ -102,26 +102,25 @@ import System.Environment
 
 import Test.Sandbox.Internals
 
-
-errorHandler :: String -> IO a
-errorHandler error' = do
-  hPutStrLn stderr error'
-  throwIO $ userError error'
+cleanUp :: Sandbox ()
+cleanUp = do
+  stopAll
+  whenM isCleanUp $ do
+    whenM isVerbose $ liftIO $ putStrLn ("Sending kill processGroups") >> hFlush stdout
+    cleanUpProcesses
 
 -- | Creates a sandbox and execute the given actions in the IO monad.
 sandbox :: String    -- ^ Name of the sandbox environment
         -> Sandbox a -- ^ Action to perform
         -> IO a
 sandbox name actions = withSystemTempDirectory (name ++ "_") $ \dir -> do
-  env <- newSandboxState name dir
-  val <- runSandbox' (actions `finally` cleanUp) env
-  either errorHandler return val
-  where
-    cleanUp = do
-      stopAll
-      whenM isCleanUp $ do
-        whenM isVerbose $ liftIO $ putStrLn ("Sending kill processGroups") >> hFlush stdout
-        cleanUpProcesses
+  -- env <- newSandboxState name dir
+  -- val <- runSandbox' (actions `finally` cleanUp) env
+  -- either errorHandler return val
+  bracket 
+    (newSandboxState name dir) 
+    (\env -> runSandbox' cleanUp env)
+    (\env -> runSandbox' actions env >>= either errorHandler return) 
 
 withSandbox :: (SandboxStateRef -> IO a) -> IO a
 withSandbox actions = do
@@ -130,10 +129,6 @@ withSandbox actions = do
     ref <- ask
     liftIO $ actions ref
 
-runSB :: SandboxStateRef -> Sandbox a -> IO a
-runSB env' action = do
-  val <- runSandbox' action env'
-  either errorHandler return val
 
 -- | Optional parameters when registering a process in the Sandbox monad.
 data ProcessSettings = ProcessSettings {

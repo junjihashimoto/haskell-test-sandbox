@@ -131,12 +131,13 @@ main = withSandbox $ \gref -> do
           _ <- setVariable I.cleanUpKey False
           pids <- I.getAvailablePids
           liftIO $ writeIORef val ref
+          error "bakudan"
           liftIO $ do
             threadDelay $ 1 * 1000 * 1000
             (length pids >= 4) `shouldBe` True
         ref' <- readIORef val
         pids <- runSB ref' $ I.getAvailablePids
-        (length pids >0 ) `shouldBe` True
+        (length pids > 0 ) `shouldBe` True
         pids' <- runSB ref' $ do
           I.cleanUpProcesses
           liftIO $ threadDelay $ 1 * 1000 * 1000
