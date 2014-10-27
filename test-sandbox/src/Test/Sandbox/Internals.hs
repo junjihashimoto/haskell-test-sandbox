@@ -272,9 +272,10 @@ isBindableByProc port = do
             "/proc/net/tcp6",
             "/proc/net/udp",
             "/proc/net/udp6"]
-      list <- forM files $ \file -> do
-        v <- readFile file
-        return $ catMaybes $ map getPort $ lines v
+      list <- forM files $ \file -> do {
+        v <- readFile file ;
+        v `seq` return $ catMaybes $ map getPort $ lines v
+        } `catch` (\(_ :: SomeException) -> return [])
       return $ flatten list
       where
         flatten :: [[a]] -> [a]
