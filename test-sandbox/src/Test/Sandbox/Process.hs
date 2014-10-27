@@ -33,9 +33,11 @@ getProcessInfos :: IO [ProcessInfo]
 getProcessInfos = do
   dirs <- getDirectoryContents "/proc"
   let processes = filter ( =~ "[0-9]+") dirs
-  stats <- forM processes $ \ps -> do
-    file <- (readFile $ "/proc/" ++ ps ++ "/stat") `catch` (\(_ :: SomeException) -> return "")
-    return $ getProcessInfo file
+  stats <- forM processes $ \ps -> do {
+    file <- (readFile $ "/proc/" ++ ps ++ "/stat") ;
+    file `seq` return $ getProcessInfo file
+    } `catch` (\(_ :: SomeException) -> return Nothing)
+    
   return $ catMaybes stats 
 
 getProcessGroupIDs :: IO [ProcessGroupID]
