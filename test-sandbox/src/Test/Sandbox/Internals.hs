@@ -198,24 +198,13 @@ hReadWithTimeout :: Handle -> Int -> Sandbox ByteString
 hReadWithTimeout h timeout = do
   dataAvailable <- liftIO $ hWaitForInput h timeout `catch` checkEOF
   if dataAvailable then do b <- liftIO $ B.hGetNonBlocking h bufferSize
-                           b' <- hReadWithTimeout' h `catchError` (\_ -> return $ B.pack [])
+                           b' <- hReadWithTimeout h timeout `catchError` (\_ -> return $ B.pack [])
                            return $ B.append b b' -- TODO: Rewrite as terminal recursive
     else throwError $ "No data after " ++ show timeout ++ "ms timeout."
   where
     checkEOF :: IOError -> IO Bool
     checkEOF e = if isEOFError e then do threadDelay $ timeout * 1000
                                          liftM not $ hIsEOF h
-                   else return True
-
-hReadWithTimeout' :: Handle -> Sandbox ByteString
-hReadWithTimeout' h = do
-  dataAvailable <- liftIO $ hWaitForInput h 0 `catch` checkEOF
-  if dataAvailable then do b <- liftIO $ B.hGetNonBlocking h bufferSize
-                           return b
-    else return $ B.pack ""
-  where
-    checkEOF :: IOError -> IO Bool
-    checkEOF e = if isEOFError e then do liftM not $ hIsEOF h
                    else return True
 
 sendToPort :: String -> String -> Int -> Sandbox String
