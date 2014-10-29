@@ -1,3 +1,4 @@
+{-#LANGUAGE ScopedTypeVariables#-}
 {- |
    Module    : Test.Sandbox
    Maintainer: Benjamin Surma <benjamin.surma@gmail.com>
@@ -203,7 +204,7 @@ stop :: String     -- ^ Process name
 stop process = uninterruptibleMask_ $ do
   sp <- getProcess process
   whenM isVerbose $ liftIO $ putStrLn ("Stopping process " ++ process ++ "... ") >> hFlush stdout
-  _ <- updateProcess =<< stopProcess sp
+  updateProcess =<< stopProcess sp
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Sends a POSIX signal to a process
@@ -221,16 +222,19 @@ stopAll :: Sandbox ()
 stopAll = uninterruptibleMask_ $ do
   whenM isVerbose $ liftIO $ putStr "Stopping all sandbox processes... " >> hFlush stdout
   env <- get
-  whenM isVerbose $ liftIO $ do
+--  whenM isVerbose $ liftIO $ do
+  do
     forM_ (reverse $ ssProcessOrder env) $ \sp -> do
       case spInstance <$> (M.lookup sp (ssProcesses env)) of
         (Just (Just (RunningInstance ph _ _))) -> do
-          pid <- hGetProcessID ph
-          putStrLn ("Starting to kill " ++ sp ++ " " ++ show pid )
+          pid <- liftIO $ hGetProcessID ph
+          liftIO$ putStrLn ("Starting to kill " ++ sp ++ " " ++ show pid )
+          stop sp `catch`  (\(e :: SomeException) -> liftIO $ print $ "error:"++show e)
+          liftIO $ putStrLn "Done."
         _ -> return ()
-    hFlush stdout
-  silently $ do env' <- get
-                mapM_ (\sp -> stop sp) (reverse $ ssProcessOrder env')
+    liftIO $ hFlush stdout
+  -- silently $ do env' <- get
+  --               mapM_ (\sp -> stop sp) (reverse $ ssProcessOrder env')
   whenM isVerbose $ liftIO $ putStrLn "Done."
 
 -- | Returns the effective binary path of a registered process.

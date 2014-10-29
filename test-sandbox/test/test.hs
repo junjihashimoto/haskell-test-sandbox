@@ -35,7 +35,7 @@ a2btest' ref str' =
     assert $ v == ((a2b str') ++ "\n")
 
 main :: IO ()
-main = withSandbox $ \gref -> do
+main = -- withSandbox $ \gref -> do
   hspec $ do
     describe "Basic Test" $ do
       it "interactive Test by sandbox" $ do
@@ -49,13 +49,13 @@ main = withSandbox $ \gref -> do
             start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
             interactWith "sed_regex" "a\n" 1
           val `shouldBe` "b\n"
-      it "interactive Test : QuickCheck(setup)" $ do
-        val <- runSB gref $ do
-          start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
-          interactWith "sed_regex" "a\n" 1
-        val `shouldBe` "b\n"
-      it "interactive Test : QuickCheck(run)" $
-        property $ a2btest gref
+      -- it "interactive Test : QuickCheck(setup)" $ do
+      --   val <- runSB gref $ do
+      --     start =<< register "sed_regex" "sed" [ "-u", "s/a/b/" ] def { psCapture = Just CaptureStdout }
+      --     interactWith "sed_regex" "a\n" 1
+      --   val `shouldBe` "b\n"
+      -- it "interactive Test : QuickCheck(run)" $
+      --   property $ a2btest gref
       it "setFile" $ do
         withSandbox $ \ref -> do
           let content =
@@ -101,6 +101,7 @@ main = withSandbox $ \gref -> do
           startAll
           liftIO $ writeIORef val ref
           pids <- I.getAvailablePids
+          error "bakudan"
           liftIO $ threadDelay $ 1 * 1000 * 1000
 --          error "bakudan"
           liftIO $ (length pids >= 4) `shouldBe` True
@@ -129,7 +130,7 @@ main = withSandbox $ \gref -> do
           _ <- register "scr1" fil2 [] def
           startAll
           pids <- I.getAvailablePids
-          liftIO $ threadDelay $ 1 * 1000 * 1000
+          -- liftIO $ threadDelay $ 100 * 1000 * 1000
           --error "bakudan"
           liftIO $ (length pids >= 4) `shouldBe` True
       it "not send kill signal for process groups" $ do
@@ -158,14 +159,13 @@ main = withSandbox $ \gref -> do
           liftIO $ writeIORef val ref
 --          error "bakudan"
           liftIO $ do
-            threadDelay $ 1 * 1000 * 1000
             (length pids >= 4) `shouldBe` True
         ref' <- readIORef val
         pids <- runSB ref' $ I.getAvailablePids
         (length pids > 0 ) `shouldBe` True
         pids' <- runSB ref' $ do
           I.cleanUpProcesses
-          liftIO $ threadDelay $ 1 * 1000 * 1000
+          -- liftIO $ threadDelay $ 1 * 1000 * 1000
           I.getAvailablePids
         length pids' `shouldBe` 0
 

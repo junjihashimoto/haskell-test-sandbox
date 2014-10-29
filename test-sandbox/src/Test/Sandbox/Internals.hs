@@ -73,9 +73,7 @@ errorHandler error' = do
 
 runSB :: SandboxStateRef -> Sandbox a -> IO a
 runSB env' action = do
-  val <- runSandbox' action env' `catch` \(e :: SomeException) -> do 
-    runSandbox' cleanUpProcesses env'
-    errorHandler (show e)
+  val <- runSandbox' action env'
   either errorHandler return val
 
 data SandboxState = SandboxState {
@@ -341,9 +339,11 @@ stopProcess sp =
   case spInstance sp of
     Just (RunningInstance ph _ _) -> do
       let wait = if isNothing $ spWait sp then 50000 else fromJust (spWait sp) * secondInµs `div` 5
+      whenM isVerbose $ liftIO $ putStrLn ("sending sigterm : " ++  spName sp)
       liftIO $ do terminateProcess ph
                   threadDelay wait
       stillRunning <- liftM isNothing $ liftIO $ getProcessExitCode ph
+      whenM isVerbose $ liftIO $ putStrLn ("sending sigkill : " ++  spName sp)
       when stillRunning $ liftIO $ killProcess ph
       process <- getProcess (spName sp)
       stopProcess process
@@ -354,6 +354,8 @@ getAvailablePids = do
   stat <- get
   let pgids = catMaybes (map (\(_k,v) -> spPGid v) (M.toList (ssProcesses stat)))
   pids <- liftIO $ getProcessIDs pgids
+  liftIO $ putStrLn $ show pgids
+  liftIO $ putStrLn $ show pids
   return pids
 
 cleanUpProcesses :: Sandbox ()
@@ -511,19 +513,11 @@ installSignalHandlers = do
   unless installed $ liftIO . void $ do _ <- installHandler sigTERM handler' Nothing
                                         _ <- installHandler sigQUIT handler' Nothing
                                         _ <- installHandler sigABRT handler' Nothing
---                                        _ <- installHandler sigINT (handler tid ref) Nothing
                                         return ()
   void $ setVariable var True
   where var = "__HANDLERS_INSTALLED__"
         handler' = Catch $ do
           signalProcess sigINT =<< getProcessID
-        -- handler tid ref = Catch $ do
-        --   runSB ref cleanUpProcesses
-        --   throwTo tid $ ExitFailure 1
-          -- threadDelay (2000000)
-          -- signalProcess sigKILL =<< getProcessID
-          
---signalProcess sigINT =<< getProcessID
 
 -- Structures to store Sandbox options for future use.
 -- Not expected to be used directly by the user.
