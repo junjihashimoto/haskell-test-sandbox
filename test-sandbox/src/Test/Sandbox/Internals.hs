@@ -73,7 +73,9 @@ errorHandler error' = do
 
 runSB :: SandboxStateRef -> Sandbox a -> IO a
 runSB env' action = do
-  val <- runSandbox' action env'
+  val <- runSandbox' action env' `catch` \(e :: SomeException) -> do 
+    runSandbox' cleanUpProcesses env'
+    errorHandler (show e)
   either errorHandler return val
 
 data SandboxState = SandboxState {
@@ -509,15 +511,15 @@ installSignalHandlers = do
   unless installed $ liftIO . void $ do _ <- installHandler sigTERM handler' Nothing
                                         _ <- installHandler sigQUIT handler' Nothing
                                         _ <- installHandler sigABRT handler' Nothing
-                                        _ <- installHandler sigINT (handler tid ref) Nothing
+--                                        _ <- installHandler sigINT (handler tid ref) Nothing
                                         return ()
   void $ setVariable var True
   where var = "__HANDLERS_INSTALLED__"
         handler' = Catch $ do
           signalProcess sigINT =<< getProcessID
-        handler tid ref = Catch $ do
-          runSB ref cleanUpProcesses
-          throwTo tid $ ExitFailure 1
+        -- handler tid ref = Catch $ do
+        --   runSB ref cleanUpProcesses
+        --   throwTo tid $ ExitFailure 1
           -- threadDelay (2000000)
           -- signalProcess sigKILL =<< getProcessID
           

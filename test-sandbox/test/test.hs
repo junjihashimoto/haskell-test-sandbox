@@ -102,11 +102,36 @@ main = withSandbox $ \gref -> do
           liftIO $ writeIORef val ref
           pids <- I.getAvailablePids
           liftIO $ threadDelay $ 1 * 1000 * 1000
+--          error "bakudan"
           liftIO $ (length pids >= 4) `shouldBe` True
         ref' <- readIORef val
         pids <- runSB ref' $ I.getAvailablePids
         length pids `shouldBe` 0
 
+      it "send kill signal for process groups" $ do
+        sandbox "test" $ do
+          file <- setFile "str1"
+                  [str|#!/usr/bin/env bash
+                      |trap "echo catch signal" 1 2 3 15
+                      |while true ; do echo hhh ; sleep 1;done
+                      |]
+          liftIO $ setExecuteMode file
+          fil2 <- setFile' "str2"
+                  [("file",file)]
+                  [str|#!/usr/bin/env bash
+                      |trap "echo catch signal" 1 2 3 15
+                      |{{file}}&
+                      |{{file}}&
+                      |{{file}}&
+                      |while true ; do echo hhh ; sleep 1;done
+                      |]
+          liftIO $ setExecuteMode fil2
+          _ <- register "scr1" fil2 [] def
+          startAll
+          pids <- I.getAvailablePids
+          liftIO $ threadDelay $ 1 * 1000 * 1000
+          --error "bakudan"
+          liftIO $ (length pids >= 4) `shouldBe` True
       it "not send kill signal for process groups" $ do
         val <- newIORef $ error "do not eval this"
         withSandbox $ \ref -> runSB ref $ do
@@ -131,7 +156,7 @@ main = withSandbox $ \gref -> do
           _ <- setVariable I.cleanUpKey False
           pids <- I.getAvailablePids
           liftIO $ writeIORef val ref
-          error "bakudan"
+--          error "bakudan"
           liftIO $ do
             threadDelay $ 1 * 1000 * 1000
             (length pids >= 4) `shouldBe` True
