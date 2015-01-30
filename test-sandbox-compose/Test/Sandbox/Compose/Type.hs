@@ -9,6 +9,7 @@ import Control.Monad
 import Data.Aeson
 import Data.Aeson.TH
 import Data.Char
+import Data.Word
 import qualified Data.Map as M
 import qualified Data.Text as T
 import Test.Sandbox.Internals
@@ -38,17 +39,18 @@ type ConfList = M.Map (ServiceName,(ConfName,ConfContent)) Service
 data Service = Service {
   sCmd :: FilePath
 , sArgs :: [String]
-, sConfs :: M.Map ConfName ConfContent
-, sDirs :: [DirName]
-, sTempFiles :: [TempFileName]
-, sPorts :: [PortName]
+, sConfs :: Maybe (M.Map ConfName ConfContent)
+, sDirs :: Maybe [DirName]
+, sTempFiles :: Maybe [TempFileName]
+, sPorts :: Maybe [PortName]
+, sBeforeScript :: Maybe String
+, sAfterScript :: Maybe String
 } deriving (Show,Read,Eq)
 
 $(deriveJSON defaultOptions{fieldLabelModifier = drop 1.map toLower, constructorTagModifier = map toLower} ''Service)
 
-$(deriveJSON defaultOptions{fieldLabelModifier = drop 1.map toLower, constructorTagModifier = map toLower} ''SandboxState)
-$(deriveJSON defaultOptions{fieldLabelModifier = drop 1.map toLower, constructorTagModifier = map toLower} ''SandboxedProcess)
-$(deriveJSON defaultOptions ''PortNumber)
+$(deriveJSON defaultOptions{fieldLabelModifier = drop 2.map toLower, constructorTagModifier = map toLower} ''SandboxState)
+$(deriveJSON defaultOptions{fieldLabelModifier = drop 2.map toLower, constructorTagModifier = map toLower} ''SandboxedProcess)
 $(deriveJSON defaultOptions ''Capture)
 $(deriveJSON defaultOptions ''SandboxedProcessInstance)
 $(deriveJSON defaultOptions ''CPid)
@@ -58,6 +60,15 @@ instance ToJSON ByteString where
   toJSON = toJSON . T.pack . B.unpack
 instance FromJSON ByteString where
   parseJSON (String str) = pure $ B.pack $ T.unpack $ str
+
+instance ToJSON PortNumber where
+  toJSON (PortNum port) = String $ T.pack $ show port
+instance FromJSON PortNumber where
+  parseJSON (String str) =
+    case (reads (T.unpack str)::[(Word16,String)]) of
+      [(port,_)] -> pure $ PortNum port
+      _ -> mzero
+  parseJSON _ = mzero
 
 instance ToJSON Handle where
   toJSON = toJSON . show

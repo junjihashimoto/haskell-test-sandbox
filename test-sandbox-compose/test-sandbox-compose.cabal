@@ -60,6 +60,8 @@ executable test-sandbox-compose
                      , warp
                      , process
                      , lifted-base
+                     , directory
+                     , unix
   -- hs-source-dirs:      
   default-language:    Haskell2010
 

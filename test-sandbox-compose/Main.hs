@@ -24,55 +24,90 @@ import Test.Sandbox hiding (run)
 import Test.Sandbox.Internals
 import qualified Data.Yaml as Y
 import qualified Data.Map as M
+import Control.Concurrent
+import System.Exit
+import System.Directory
+import System.Process
+import System.Posix.Process
+import System.Posix
+
 
 instance Yesod App where
   errorHandler e = liftIO (print e) >> defaultErrorHandler e
 
-getUpAllR :: HandlerT App IO Value
+getUpAllR :: HandlerT App IO RepPlain
 getUpAllR = do
   (App serv sand) <- getYesod
   result <- liftIO $ flip runSandbox sand $ do
     runServices =<< readIORef serv
   case result of
-    Right _ -> return $ String "OK"
-    Left err -> return $ String $ T.pack $ show err
+    Right _ -> return $ RepPlain "OK\n"
+    Left err -> return $ RepPlain $ toContent $ err
 
-getUpR :: ServiceName -> HandlerT App IO Value
+getUpR :: ServiceName -> HandlerT App IO RepPlain
 getUpR serviceName = do
   (App serv sand) <- getYesod
   result <- liftIO $ flip runSandbox sand $ do
     runService serviceName =<< readIORef serv
   case result of
-    Right _ -> return $ String "OK"
-    Left err -> return $ String $ T.pack $ show err
+    Right _ -> return $ RepPlain "OK\n"
+    Left err -> return $ RepPlain $ toContent $ err
 
 
-getStatusAllR :: HandlerT App IO Value
+getStatusAllR :: HandlerT App IO RepPlain
 getStatusAllR = do
   (App serv sand) <- getYesod
   sand' <- liftIO $ readIORef sand
-  return $ String $ T.pack $ BC.unpack $ Y.encode $ sand'
+  return $ RepPlain $ toContent $ Y.encode $ sand' {ssAvailablePorts=[]}
   
-getConfR :: HandlerT App IO Value
+getStatusR :: ServiceName -> HandlerT App IO RepPlain
+getStatusR serviceName = do
+  (App serv sand) <- getYesod
+  sand' <- liftIO $ readIORef sand
+  return $ RepPlain $ toContent $ Y.encode $ sand' {ssAvailablePorts=[]}
+  
+getConfR :: HandlerT App IO RepPlain
 getConfR = do
   (App serv sand) <- getYesod
   sand' <- liftIO $ readIORef serv
-  return $ String $ T.pack $ BC.unpack $ Y.encode $ sand'
+  return $ RepPlain $ toContent $ Y.encode $ sand'
   
-getKillAllR :: HandlerT App IO Value
+ :: HandlerT App IO RepPlain
 getKillAllR = do
   (App _ sand) <- getYesod
   result <- liftIO $ flip runSandbox sand $ do
     killServices
   case result of
-    Right _ -> return $ String "OK"
-    Left err -> return $ String $ T.pack $ show err
+    Right _ -> return  $ RepPlain "OK\n"
+    Left err -> return $ RepPlain $ toContent $ err
+
+getKillR :: ServiceName -> HandlerT App IO RepPlain
+getKillR serviceName = do
+  (App _ sand) <- getYesod
+  result <- liftIO $ flip runSandbox sand $ do
+    killService serviceName
+  case result of
+    Right _ -> return  $ RepPlain "OK\n"
+    Left err -> return $ RepPlain $ toContent $ err
+
+
+getDestroyR :: HandlerT App IO RepPlain
+getDestroyR = do
+  (App _ sand) <- getYesod
+  result <- liftIO $ flip runSandbox sand $ do
+    killServices
+  liftIO $ forkIO $ do
+    threadDelay (1*1000*1000)
+    id <- getProcessID
+    signalProcess sigTERM id
+  return  $ RepPlain "OK\n"
+
 
 getLogsAllR :: HandlerT App IO Value
 getLogsAllR = error "not implemented"
   
-getLogsR :: HandlerT App IO Value
-getLogsR = error "not implemented"
+getLogsR :: ServiceName -> HandlerT App IO Value
+getLogsR serviceName = error "not implemented"
   
 mkYesod "App" [parseRoutes|
 /up                  UpAllR     GET
@@ -82,20 +117,21 @@ mkYesod "App" [parseRoutes|
 /conf                ConfR      GET
 /kill                KillAllR   GET
 /kill/#ServiceName   KillR      GET
-/log                 LogsAllR   GET
-/log/#ServiceName    LogsR      GET
+/logs                LogsAllR   GET
+/logs/#ServiceName   LogsR      GET
+/destroy             DestroyR   GET
 |]
 
 main :: IO ()
 main = do
-  state <- newSandboxState "compose" ".sandbox"
+  cdir <- getCurrentDirectory
+  state <- newSandboxState "compose" (cdir ++ "/.sandbox")
   eServ <- Y.decodeFileEither "test-sandbox-compose.yml" :: IO (Either Y.ParseException Services)
-  print $ eServ
-  let (Right serv) = eServ
-  print $ serv
-  B.putStr $ Y.encode $ serv
-  serv' <- runSandbox' state $ setupServices serv
-  B.putStr $ Y.encode $ serv'
-  print $ show serv'
-  services <- newIORef serv'
-  toWaiApp (App services state) >>= run 3000
+  case eServ of
+    Left err -> do
+      print err
+      exitWith $ ExitFailure 1
+    Right serv -> do
+      serv' <- runSandbox' state $ setupServices serv
+      services <- newIORef serv'
+      toWaiApp (App services state) >>= run 3000
