@@ -132,6 +132,12 @@ main = do
       print err
       exitWith $ ExitFailure 1
     Right serv -> do
-      serv' <- runSandbox' state $ setupServices serv
+      serv' <- runSandbox' state $ do
+        mserv <- setupServices serv
+        case mserv of
+          Just s -> return s
+          Nothing ->  liftIO $ do
+            print "setupServices is failed."           
+            exitWith $ ExitFailure 1
       services <- newIORef serv'
       toWaiApp (App services state) >>= run 3000

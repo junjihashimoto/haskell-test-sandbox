@@ -12,6 +12,7 @@ import Data.Char
 import Data.Word
 import qualified Data.Map as M
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import Test.Sandbox.Internals
 import Network
 import Network.Socket hiding (ServiceName)
@@ -57,18 +58,9 @@ $(deriveJSON defaultOptions ''CPid)
 $(deriveJSON defaultOptions ''ExitCode)
 
 instance ToJSON ByteString where
-  toJSON = toJSON . T.pack . B.unpack
+  toJSON = toJSON . T.decodeUtf8
 instance FromJSON ByteString where
-  parseJSON (String str) = pure $ B.pack $ T.unpack $ str
-
-instance ToJSON PortNumber where
-  toJSON (PortNum port) = String $ T.pack $ show port
-instance FromJSON PortNumber where
-  parseJSON (String str) =
-    case (reads (T.unpack str)::[(Word16,String)]) of
-      [(port,_)] -> pure $ PortNum port
-      _ -> mzero
-  parseJSON _ = mzero
+  parseJSON (String str) = pure $ T.encodeUtf8 $ str
 
 instance ToJSON Handle where
   toJSON = toJSON . show
