@@ -1,6 +1,6 @@
-
 {-#LANGUAGE TemplateHaskell#-}
 {-#LANGUAGE StandaloneDeriving#-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Test.Sandbox.Compose.Type where
 
@@ -9,15 +9,10 @@ import Control.Monad
 import Data.Aeson
 import Data.Aeson.TH
 import Data.Char
-import Data.Word
 import qualified Data.Map as M
-import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import Test.Sandbox.Internals
-import Network
-import Network.Socket hiding (ServiceName)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as B
 import Data.IORef
 import System.Process hiding (env, waitForProcess)
 import System.Posix.Types
@@ -32,10 +27,6 @@ type ConfName = String
 type ConfContent = String
 
 type Services = M.Map ServiceName Service
-type PortList = [(ServiceName,PortName)]
-type TempList = [(ServiceName,TempFileName)]
-type DirList =  [(ServiceName,DirName)]
-type ConfList = M.Map (ServiceName,(ConfName,ConfContent)) Service
 
 data Service = Service {
   sCmd :: FilePath
@@ -61,6 +52,7 @@ instance ToJSON ByteString where
   toJSON = toJSON . T.decodeUtf8
 instance FromJSON ByteString where
   parseJSON (String str) = pure $ T.encodeUtf8 $ str
+  parseJSON _ = mzero
 
 instance ToJSON Handle where
   toJSON = toJSON . show

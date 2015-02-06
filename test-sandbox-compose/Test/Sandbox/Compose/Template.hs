@@ -1,5 +1,7 @@
 
-module Test.Sandbox.Compose.Template where
+module Test.Sandbox.Compose.Template (
+  applyTemplate
+) where
 
 import qualified Text.Hastache as H
 import qualified Text.Hastache.Context as H

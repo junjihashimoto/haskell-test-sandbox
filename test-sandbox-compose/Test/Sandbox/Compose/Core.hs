@@ -1,8 +1,11 @@
-{-#LANGUAGE TemplateHaskell#-}
+module Test.Sandbox.Compose.Core (
+  setupServices
+, runServices
+, runService
+, killServices
+, killService
+) where
 
-module Test.Sandbox.Compose.Core where
-
---import Data.Monoid
 import Control.Monad
 import Data.Maybe
 import qualified Data.Map as M
@@ -14,7 +17,6 @@ import Test.Sandbox.Internals
 import qualified Data.Yaml as Y
 import System.Process
 import System.Exit
-import Network.Socket (PortNumber(..))
 
 getList :: (Service -> [a]) -> Services -> [(ServiceName,a)]
 getList func services =
@@ -43,24 +45,26 @@ setupServices services = do
     dir <- getDataDir
     return (dirname,dir++"/"++dirname) :: Sandbox (String,String)
   let params = ports ++ temps ++ dirs
-  mPreService  <- updateServices params (Just services)
+  mPreServices  <- updateServices params (Just services)
 
-  case mPreService of
+  case mPreServices of
     Nothing -> return Nothing
-    Just preService -> do 
-      confs <- forM (getConfList preService) $ \(s,(cn,_)) ->  do
+    Just preServices -> do 
+      confs <- forM (getConfList preServices) $ \(s,(cn,_)) ->  do
         let tempname = s++"_conf_"++cn
         filename <- setFile tempname ""
         return (tempname,filename) :: Sandbox (String,String)
-      mService  <-  updateServices confs mPreService
-      case mService of
+      mServices  <-  updateServices confs mPreServices
+      case mServices of
         Nothing -> return Nothing
-        Just service ->  do
-          forM_ (getConfList service) $ \(s,(cn,cc)) ->  do
+        Just services' ->  do
+          forM_ (getConfList services') $ \(s,(cn,cc)) ->  do
             let tempname = s++"_conf_"++cn
             filename <- getFile tempname
             liftIO $ writeFile filename cc
-          return mService
+          forM_ (M.toList services) $ \(sname,sconf) -> do
+            registerService sname sconf
+          return mServices
   where
     updateServices _ Nothing = return Nothing
     updateServices params (Just service) = do
@@ -72,12 +76,17 @@ runServices services = do
   forM_ (M.toList services) $ \(k,_) -> do
     runService k services
 
-runService :: ServiceName -> Services -> Sandbox ()
-runService serviceName services = do
+registerService :: ServiceName -> Service -> Sandbox ()
+registerService serviceName service = do
   dir <- getDataDir
   let k = serviceName
-  let v = services M.! serviceName
+  let v = service
   void $ register k (sCmd v) (sArgs v) (def{psWait = Just 3,psCapture=Just (CaptureBothWithFile (dir ++ "/" ++ k ++ "_out.txt") (dir ++ "/" ++ k ++ "_err.txt"))})
+
+runService :: ServiceName -> Services -> Sandbox ()
+runService serviceName services = do
+  let k = serviceName
+  let v = services M.! serviceName
   case sBeforeScript v of
     Just script -> do
       r@(c,_,_) <- liftIO $ readProcessWithExitCode "bash" ["-c",script] []
@@ -94,7 +103,6 @@ runService serviceName services = do
 
 killService :: ServiceName -> Sandbox ()
 killService k = stop k
-
 
 killServices :: Sandbox ()
 killServices = do

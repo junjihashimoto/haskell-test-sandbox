@@ -31,6 +31,7 @@ Install this from Hackage.
     - <port1>
     - <port2>
 <service-name2>
+  ...
 ```
 
 
@@ -59,4 +60,10 @@ test-sandbox-compose kill
 
 ```
 test-sandbox-compose logs
+```
+
+### Destroy
+
+```
+test-sandbox-compose destroy
 ```
