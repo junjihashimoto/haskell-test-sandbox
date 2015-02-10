@@ -24,7 +24,7 @@ import System.Exit
 import System.Directory
 import System.Posix.Process
 import System.Posix hiding (Kill)
-import Shelly hiding (command,run)
+import Shelly hiding (command,run,FilePath)
 import Data.Monoid
 
 default (T.Text)
@@ -127,8 +127,9 @@ mkYesod "App" [parseRoutes|
 /destroy             DestroyR   GET
 |]
 
-runServer :: Bool -> IO ()
-runServer enbBackGround = do
+
+runServer' :: FilePath -> IO (App,Int)
+runServer' conf = do
   cdir <- getCurrentDirectory
   let dir=(cdir <> "/.sandbox")
   shelly $ do
@@ -138,7 +139,7 @@ runServer enbBackGround = do
   port <- runSandbox' state $ do
     getPort "test-sandbox-compose"
   writeFile (dir <> "/port") $ show port
-  eServ <- Y.decodeFileEither "test-sandbox-compose.yml" :: IO (Either Y.ParseException Services)
+  eServ <- Y.decodeFileEither conf :: IO (Either Y.ParseException Services)
   case eServ of
     Left err -> do
       print err
@@ -152,9 +153,14 @@ runServer enbBackGround = do
             print "setupServices is failed."
             exitWith $ ExitFailure 1
       services <- newIORef serv'
-      let prog :: IO ()
-          prog = toWaiApp (App services state) >>= run port
-      backGround enbBackGround prog
+      return (App services state,port)
+
+runServer :: FilePath -> Bool -> IO ()
+runServer conf enbBackGround = do
+  (app,port) <- runServer' conf
+  let prog :: IO ()
+      prog = toWaiApp app >>= run port
+  backGround enbBackGround prog
 
 backGround :: Bool -> IO () -> IO ()
 backGround exitP prog = do

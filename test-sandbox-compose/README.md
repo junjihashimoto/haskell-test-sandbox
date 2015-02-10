@@ -4,7 +4,13 @@
 
 Test-Sandbox-Compose makes development environments for multi-servers using Test-Sandbox.
 Each server is defined in test-sandbox-compose.yml.
-It is inspired by Docker Compose.
+test-sandbox-compose.yml provides following functions.
+
+* Mustache template for accessing each resource
+* Before/After-bash-script for server-setup
+* Tempolary file, directory and TCP-Port which test-sandbox provides
+
+This project is inspired by Docker Compose(Fig).
 
 ## Getting started
 
@@ -22,16 +28,41 @@ Install this from Hackage.
     - <arg1>
     - <arg2>
   confs:
-    - <conf1>
-    - <conf2>
+    <conf1>: <conf1 contents>
+    <conf2>: <conf2 contents>
+  tempfiles:
+    - <temp1>
+    - <temp2>
   dirs:
     - <dir1>
     - <dir2>
   ports:
     - <port1>
     - <port2>
+  beforescript: <script content>
+  afterscript: <script content>
 <service-name2>
   ...
+```
+
+Example
+
+```
+zookeeper:
+  cmd: '/usr/share/zookeeper/bin/zkServer.sh'
+  args:
+    - 'start-foreground'
+    - '{{zookeeper_conf_conf}}'
+  tempfiles: []
+  confs:
+    conf: |
+      dataDir={{zookeeper_dir_data}}
+      clientPort={{zookeeper_port_2181}}
+      maxClientCnxns=1000
+  dirs:
+    - 'data'
+  ports:
+    - '2181'
 ```
 
 
@@ -50,6 +81,12 @@ test-sandbox-compose up
 test-sandbox-compose status
 ```
 
+### Conf
+
+```
+test-sandbox-compose conf
+```
+
 ### Kill
 
 ```
@@ -66,4 +103,10 @@ test-sandbox-compose logs
 
 ```
 test-sandbox-compose destroy
+```
+
+### Daemon
+
+```
+test-sandbox-compose daemon
 ```

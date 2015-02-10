@@ -7,7 +7,7 @@ import Options.Applicative
 
 import qualified Data.ByteString.Lazy as L
 import qualified Data.Text as T
-import Shelly hiding (command,run)
+import Shelly hiding (command,run,FilePath)
 import Network.HTTP.Conduit
 import Control.Monad
 import Control.Concurrent
@@ -23,7 +23,7 @@ data Command
   | Kill [String]
   | Logs [String]
   | Destroy
-  | Daemon
+  | Daemon FilePath
   deriving Show
 
 up :: Parser Command
@@ -45,7 +45,7 @@ destroy :: Parser Command
 destroy = pure Destroy
 
 daemon :: Parser Command
-daemon = pure Daemon
+daemon = Daemon <$> strOption (long "conf" <> value "test-sandbox-compose.yml" <> metavar "CONFFILE(Yaml)")
 
 parse :: Parser Command
 parse = subparser $ foldr1 (<>) [
@@ -62,7 +62,7 @@ setup :: IO Port
 setup = shelly $ do
   unlessM (test_e ".sandbox/port") $
     liftIO $ do
-    runServer False
+    runServer "test-sandbox-compose.yml" False
     threadDelay $ 1*1000*1000
   content <- readfile ".sandbox/port"
   return $ read $ T.unpack content
@@ -83,7 +83,7 @@ runCmd (Kill targets) = runCmd' targets "kill"
 runCmd (Logs targets) = runCmd' targets "logs"
 runCmd Conf = runCmd' [] "conf"
 runCmd Destroy = runCmd' [] "destroy"
-runCmd Daemon = runServer True
+runCmd (Daemon conf) = runServer conf True
   
 opts :: ParserInfo Command
 opts = info (parse <**> helper) idm

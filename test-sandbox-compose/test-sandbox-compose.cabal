@@ -20,6 +20,7 @@ library
                      , Test.Sandbox.Compose.Type
                      , Test.Sandbox.Compose.Core
                      , Test.Sandbox.Compose.Template
+                     , Test.Sandbox.Compose.Server
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base
@@ -88,4 +89,27 @@ test-suite test
     build-depends:     base
                      , hspec
                      , shakespeare
+                     , test-sandbox-compose
+                     , aeson
+                     , containers
+                     , hastache
+                     , text
+                     , containers
+                     , test-sandbox
+                     , yaml
+                     , network
+                     , yesod
+                     , yesod-core
+                     , wai
+                     , wai-extra
+                     , bytestring
+                     , warp
+                     , process
+                     , lifted-base
+                     , directory
+                     , unix
+                     , shelly
+                     , http-conduit
+                     , void
+                     , cabal-test-bin >= 0.1.4
     Default-Language:   Haskell2010

@@ -62,7 +62,7 @@ setupServices services = do
             let tempname = s++"_conf_"++cn
             filename <- getFile tempname
             liftIO $ writeFile filename cc
-          forM_ (M.toList services) $ \(sname,sconf) -> do
+          forM_ (M.toList services') $ \(sname,sconf) -> do
             registerService sname sconf
           return mServices
   where
